@@ -332,6 +332,62 @@ async def load_steps(run_id: ObjectId) -> list[dict]:
 	return await cursor.to_list(length=MAX_CONTEXT_STEPS)
 
 
+PLAN_ITEM_CHARS = 160  # a plan line the agent re-reads every step; keep it scannable
+
+# Params worth quoting in a plan line. `index` is deliberately absent: it is a positional
+# bet on a DOM that has since re-rendered, and the whole point of a plan item is to survive
+# that re-render.
+_HINT_PARAM_KEYS = ("url", "query", "text", "value", "search", "file_name")
+
+
+def _action_hint(action: dict) -> str:
+	"""Compress one recorded action into the trailing hint on a plan line.
+
+	Element *identity* (what the thing was called) transfers between runs; element
+	*position* does not. So we prefer the accessible name, fall back to a quoted param,
+	and give up gracefully to the bare action name.
+	"""
+	name = action.get("name") or "action"
+	element = action.get("element") or {}
+	label = (element.get("text") or "").strip()
+	if label:
+		return f"{name} <{element.get('tag') or '?'}> {label}"
+	for key in _HINT_PARAM_KEYS:
+		value = (action.get("params") or {}).get(key)
+		if isinstance(value, str) and value.strip():
+			return f'{name} "{value.strip()}"'
+	return name
+
+
+def build_plan_items(steps: list[dict], *, limit: int = MAX_CONTEXT_STEPS) -> list[str]:
+	"""Turn a prior run's steps into text for `AgentState.plan`.
+
+	Two kinds of step are dropped rather than replayed:
+
+	* **steps where every action errored** — these are the wrong turns the previous run
+	  recovered from. They are in the trace because they happened, not because they
+	  worked, and handing them over as a plan walks the next agent back into them.
+	* **the closing `done`** — browser-use requires the agent to verify completion against
+	  the live `<user_request>` (system_prompt.md:118). Inheriting someone else's verdict
+	  as a plan item invites it to skip that check.
+	"""
+	items: list[str] = []
+	for step in steps[:limit]:
+		actions = [a for a in (step.get("actions") or []) if a.get("name") != "done"]
+		if not actions or all(not a.get("ok", True) for a in actions):
+			continue
+		goal = " ".join((step.get("reasoning") or "").split())
+		hints = "; ".join(_action_hint(a) for a in actions if a.get("ok", True))
+		if goal and hints:
+			text = f"{goal} [{hints}]"
+		else:
+			text = goal or hints
+		if len(text) > PLAN_ITEM_CHARS:
+			text = text[:PLAN_ITEM_CHARS].rstrip() + "..."
+		items.append(text)
+	return items
+
+
 def build_memory_context(selection: RunSelection, steps: list[dict]) -> str:
 	"""Render the winning run as a prompt block for the next agent.
 

@@ -2,8 +2,8 @@
 
 Run with: python -m context_layer.scripts.demo_select "add bananas to cart"
 
-Prints every candidate with its score components, then the winner and the exact context
-block that would be injected into the next agent run.
+Prints every candidate with its score components, then the winner: the plan items that
+would be seeded into the agent's `<plan>` block, and the long-form context block.
 """
 
 import asyncio
@@ -13,6 +13,7 @@ from context_layer.scorer import (
 	MIN_SCORE,
 	MIN_SIMILARITY,
 	build_memory_context,
+	build_plan_items,
 	load_steps,
 	rank_candidates,
 )
@@ -38,7 +39,12 @@ async def main(task_text: str, domain: str | None) -> None:
 		return
 
 	steps = await load_steps(best.run_id)
-	print(f"selected run {best.run_id} (score {best.score:.3f}); context block:\n")
+	items = build_plan_items(steps)
+	print(f"selected run {best.run_id} (score {best.score:.3f})")
+	print(f"\nseeded <plan> ({len(items)} of {len(steps)} steps survive the filters):\n")
+	for i, text in enumerate(items):
+		print(f"  {'[>]' if i == 0 else '[ ]'} {i}: {text}")
+	print("\nlong-form context block (not injected by default):\n")
 	print(build_memory_context(best, steps))
 
 

@@ -4,15 +4,22 @@ Steps are appended to memory as the run progresses (no I/O). Once the run finish
 everything is written to MongoDB in a single batch via writer.write_run.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from bson import ObjectId
 
+from context_layer.agent_hooks import seed_agent_plan
 from context_layer.embeddings import embed_text_safe
 from context_layer.schema import ActionEntry, RunDoc, StepDoc, model_tier
-from context_layer.scorer import build_memory_context, load_steps, select_best_run
+from context_layer.scorer import (
+	RunSelection,
+	build_memory_context,
+	build_plan_items,
+	load_steps,
+	select_best_run,
+)
 from context_layer.writer import write_run
 
 
@@ -131,15 +138,53 @@ class RunCollector:
 @dataclass
 class PreparedRun:
 	"""Everything the caller needs to start one agent run: the memory to inject, and the
-	collector that will record the result."""
+	collector that will record the result.
+
+	`plan_items` is the injectable form — the winning run's steps, ready for the agent's
+	`<plan>` block. `memory_context` is the same run rendered long-form (xpaths, results,
+	the judge's reason); it is not injected by default, since duplicating the trace in two
+	places only spends tokens. Pass it to `Agent(extend_system_message=...)` if you want it.
+	"""
 
 	collector: RunCollector
 	memory_context: str | None
 	memory_source_run_id: ObjectId | None
+	plan_items: list[str] = field(default_factory=list)
+	selection: RunSelection | None = None
 
 	@property
 	def used_memory(self) -> bool:
+		"""Whether a prior run cleared the scorer's floors and was handed to this run."""
 		return self.memory_context is not None
+
+	def plan_header(self) -> str:
+		if self.selection is None:
+			return "Seeded plan from a prior verified run"
+		run = self.selection.run
+		return (
+			f'Replaying {len(self.plan_items)} steps from prior verified run {self.selection.run_id} '
+			f'"{self.selection.task_text}" '
+			f"(similarity {self.selection.similarity:.2f}, score {self.selection.score:.3f}, "
+			f"{run.get('total_steps')} steps in {(run.get('duration_ms') or 0) / 1000:.1f}s)"
+		)
+
+	def attach(self, agent: Any) -> bool:
+		"""Wire this prepared run onto a constructed Agent, before `agent.run()`.
+
+		Registers the done callback and seeds the plan. Returns whether a plan was actually
+		installed — False when nothing cleared the floors, which is the cold path and a
+		correct outcome, or when the agent has planning disabled.
+
+		The caller must still pass `on_step_end=prepared.collector.on_step_end` to
+		`agent.run()`; browser-use takes that hook as a run() argument, not an attribute.
+		"""
+		agent.register_done_callback = self.collector.on_done
+		if not self.plan_items:
+			logger = getattr(agent, "logger", None)
+			if logger is not None:
+				logger.info("📋 No prior run cleared the scorer's floors — running cold.")
+			return False
+		return seed_agent_plan(agent, self.plan_items, header=self.plan_header())
 
 
 async def prepare_run(
@@ -160,6 +205,7 @@ async def prepare_run(
 
 	memory_context: str | None = None
 	source_run_id: ObjectId | None = None
+	plan_items: list[str] = []
 	selection = await select_best_run(
 		task_text,
 		domain=domain,
@@ -169,6 +215,7 @@ async def prepare_run(
 	if selection is not None:
 		steps = await load_steps(selection.run_id)
 		if steps:
+			plan_items = build_plan_items(steps)
 			memory_context = build_memory_context(selection, steps)
 			source_run_id = selection.run_id
 
@@ -180,7 +227,13 @@ async def prepare_run(
 		task_params=task_params,
 		task_embedding=embedding,
 	)
-	return PreparedRun(collector=collector, memory_context=memory_context, memory_source_run_id=source_run_id)
+	return PreparedRun(
+		collector=collector,
+		memory_context=memory_context,
+		memory_source_run_id=source_run_id,
+		plan_items=plan_items,
+		selection=selection if source_run_id is not None else None,
+	)
 
 
 def attach_context_layer(agent: Any) -> RunCollector:
