@@ -4,12 +4,15 @@ Steps are appended to memory as the run progresses (no I/O). Once the run finish
 everything is written to MongoDB in a single batch via writer.write_run.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from bson import ObjectId
 
+from context_layer.embeddings import embed_text_safe
 from context_layer.schema import ActionEntry, RunDoc, StepDoc, model_tier
+from context_layer.scorer import build_memory_context, load_steps, select_best_run
 from context_layer.writer import write_run
 
 
@@ -86,6 +89,7 @@ class RunCollector:
 		used_memory: bool = False,
 		memory_source_run_id: ObjectId | None = None,
 		task_params: dict | None = None,
+		task_embedding: list[float] | None = None,
 	):
 		self.run_id = ObjectId()
 		self._run = RunDoc(
@@ -95,6 +99,9 @@ class RunCollector:
 			used_memory=used_memory,
 			memory_source_run_id=memory_source_run_id,
 			task_params=task_params,
+			# Passed in by prepare_run, which already embedded this text to search with.
+			# Left None, write_run embeds at save time instead — same result, one extra call.
+			task_embedding=task_embedding,
 		)
 		self._steps: list[StepDoc] = []
 
@@ -119,6 +126,61 @@ class RunCollector:
 		self._run.ended_at = datetime.utcnow()
 
 		await write_run(self.run_id, self._run, self._steps)
+
+
+@dataclass
+class PreparedRun:
+	"""Everything the caller needs to start one agent run: the memory to inject, and the
+	collector that will record the result."""
+
+	collector: RunCollector
+	memory_context: str | None
+	memory_source_run_id: ObjectId | None
+
+	@property
+	def used_memory(self) -> bool:
+		return self.memory_context is not None
+
+
+async def prepare_run(
+	task_text: str,
+	model: str,
+	*,
+	domain: str | None = None,
+	task_params: dict | None = None,
+) -> PreparedRun:
+	"""Embed the task once, pick the best prior run with that vector, and return a
+	collector already tagged with what it was seeded from.
+
+	The single embedding is the point: the scorer needs one to search with and the run
+	document needs the same one to be searchable later. Calling the two paths separately
+	embeds identical text twice per run, for no benefit.
+	"""
+	embedding = await embed_text_safe(task_text)
+
+	memory_context: str | None = None
+	source_run_id: ObjectId | None = None
+	selection = await select_best_run(
+		task_text,
+		domain=domain,
+		query_vector=embedding,
+		embed_if_missing=False,
+	)
+	if selection is not None:
+		steps = await load_steps(selection.run_id)
+		if steps:
+			memory_context = build_memory_context(selection, steps)
+			source_run_id = selection.run_id
+
+	collector = RunCollector(
+		task_text=task_text,
+		model=model,
+		used_memory=memory_context is not None,
+		memory_source_run_id=source_run_id,
+		task_params=task_params,
+		task_embedding=embedding,
+	)
+	return PreparedRun(collector=collector, memory_context=memory_context, memory_source_run_id=source_run_id)
 
 
 def attach_context_layer(agent: Any) -> RunCollector:

@@ -246,11 +246,16 @@ async def rank_candidates(
 	domain: str | None = None,
 	query_vector: list[float] | None = None,
 	limit: int = CANDIDATE_LIMIT,
+	embed_if_missing: bool = True,
 ) -> list[RunSelection]:
-	"""Retrieve similar runs and score them, best first. No floors applied — see select_best_run."""
+	"""Retrieve similar runs and score them, best first. No floors applied — see select_best_run.
+
+	`embed_if_missing=False` means the caller already tried to embed and failed; without it
+	we'd pay for (and log) a second doomed API call before falling back.
+	"""
 	global _vector_search_warned
 
-	if query_vector is None:
+	if query_vector is None and embed_if_missing:
 		query_vector = await embed_text_safe(task_text)
 
 	if query_vector is not None:
@@ -290,13 +295,19 @@ async def select_best_run(
 	query_vector: list[float] | None = None,
 	min_similarity: float = MIN_SIMILARITY,
 	min_score: float = MIN_SCORE,
+	embed_if_missing: bool = True,
 ) -> RunSelection | None:
 	"""The entry point: the one run worth seeding the next run with, or None to run cold.
 
 	None is a real outcome, not an error. If nothing clears the floors, the caller should
 	run without memory rather than inject the closest thing it could find.
 	"""
-	candidates = await rank_candidates(task_text, domain=domain, query_vector=query_vector)
+	candidates = await rank_candidates(
+		task_text,
+		domain=domain,
+		query_vector=query_vector,
+		embed_if_missing=embed_if_missing,
+	)
 	if not candidates:
 		return None
 

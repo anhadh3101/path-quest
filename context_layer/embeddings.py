@@ -41,5 +41,5 @@ async def embed_text_safe(text: str) -> list[float] | None:
 	try:
 		return await embed_text(text)
 	except Exception as exc:
-		print(f"[context_layer] embedding unavailable: {exc}")
+		print(f"[context_layer] WARNING: no embedding for this task, so the run will be invisible to the scorer — {exc}")
 		return None
