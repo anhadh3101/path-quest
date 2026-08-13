@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Context layer for the browser-use agent"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pymongo>=4.9",
+    "python-dotenv>=1.0",
+    "openai>=1.0",
+]
 
 [build-system]
 requires = ["hatchling"]
