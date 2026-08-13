@@ -47,12 +47,16 @@ Two stages, in `scorer.py`:
 
    | term | weight | |
    |---|---|---|
-   | `sim` | 0.35 | semantic similarity to the new task |
-   | `eff_steps` | 0.25 | fewer steps, normalized within the candidate set |
-   | `eff_time` | 0.15 | wall clock, same normalization |
-   | `eff_tokens` | 0.10 | token cost, same normalization |
-   | `clean` | 0.10 | share of actions that ran without error |
-   | `recency` | 0.05 | 14-day half-life; selectors rot |
+   | `sim` | 0.38 | semantic similarity to the new task |
+   | `eff_steps` | 0.28 | fewer steps, normalized within the candidate set |
+   | `eff_time` | 0.17 | wall clock, same normalization |
+   | `clean` | 0.11 | share of actions that ran without error |
+   | `recency` | 0.06 | 14-day half-life; selectors rot |
+
+There is no token term: `total_tokens` is 0 on every run, because the done callback fires
+at `agent/service.py:2494` while `history.usage` is only assigned at `:2657`. Capture
+usage after `agent.run()` returns and the term can come back — see `WEIGHTS` in
+`scorer.py` for the numbers to restore.
 
 Efficiency is normalized *within* the retrieved candidates rather than globally, so nine
 steps reads as excellent for a checkout flow and poor for a search with no per-task tuning.

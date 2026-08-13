@@ -45,13 +45,19 @@ RECENCY_HALF_LIFE_DAYS = 14.0
 UNKNOWN_CLEAN = 0.5  # runs written before action counts existed: unknown, not perfect
 EPSILON = 1e-9
 
+# There is deliberately no token term here. `total_tokens` is 0 on every run: the done
+# callback fires at agent/service.py:2494, but history.usage isn't assigned until :2657,
+# so the collector always reads None. A term that is constant across candidates adds
+# nothing to the ranking and dilutes the terms that do carry signal.
+#
+# To restore once usage is captured after agent.run() returns: add "eff_tokens": 0.10 and
+# take it back off sim (0.38 -> 0.35) and eff_steps (0.28 -> 0.25).
 WEIGHTS: dict[str, float] = {
-	"sim": 0.35,
-	"eff_steps": 0.25,
-	"eff_time": 0.15,
-	"eff_tokens": 0.10,
-	"clean": 0.10,
-	"recency": 0.05,
+	"sim": 0.38,
+	"eff_steps": 0.28,
+	"eff_time": 0.17,
+	"clean": 0.11,
+	"recency": 0.06,
 }
 
 # Used when we rank without a vector search (no embedding, or no index yet). Constant
@@ -146,8 +152,6 @@ def scoring_stages(weights: dict[str, float] | None = None) -> list[dict]:
 					"_max_steps": {"$max": "$total_steps", "window": _UNBOUNDED},
 					"_min_ms": {"$min": "$duration_ms", "window": _UNBOUNDED},
 					"_max_ms": {"$max": "$duration_ms", "window": _UNBOUNDED},
-					"_min_tokens": {"$min": "$total_tokens", "window": _UNBOUNDED},
-					"_max_tokens": {"$max": "$total_tokens", "window": _UNBOUNDED},
 				},
 			}
 		},
@@ -157,7 +161,6 @@ def scoring_stages(weights: dict[str, float] | None = None) -> list[dict]:
 					"sim": "$sim",
 					"eff_steps": _cheaper_is_better("$total_steps", "$_min_steps", "$_max_steps"),
 					"eff_time": _cheaper_is_better("$duration_ms", "$_min_ms", "$_max_ms"),
-					"eff_tokens": _cheaper_is_better("$total_tokens", "$_min_tokens", "$_max_tokens"),
 					# The trace goes verbatim into the next prompt, so failed actions cost
 					# tokens and mislead. Runs predating the counters score neutral.
 					"clean": {
@@ -202,8 +205,6 @@ def scoring_stages(weights: dict[str, float] | None = None) -> list[dict]:
 				"_max_steps": 0,
 				"_min_ms": 0,
 				"_max_ms": 0,
-				"_min_tokens": 0,
-				"_max_tokens": 0,
 			}
 		},
 	]
